@@ -3,12 +3,12 @@ from flask_restful import Api
 import flask, sqlalchemy, os, requests, json
 from flask_cors import CORS, cross_origin
 from flask_sqlalchemy import SQLAlchemy
-from enum import Enum
-from sqlalchemy import Column, Integer, Float, String, Date, select, update
+from sqlalchemy import ForeignKey, Column, Integer, Float, String, Date, select, update, event, text
+from sqlalchemy.engine import Engine
 from sqlalchemy.sql import func
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.exc import OperationalError
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, relationship
 # set up a scoped_session -> https://stackoverflow.com/a/18265238/3482140
 from sqlalchemy.orm import scoped_session
 from sqlalchemy.orm import sessionmaker
@@ -21,6 +21,18 @@ from flask_login import (
     logout_user,
 )
 from oauthlib.oauth2 import WebApplicationClient
+from appusermodel import AppUserModel
+from businessmodel import BusinessModel
+from offermodel import OfferModel
+from plot_analysis import PlotAnalysis
+from actionresult import ActionResult
+
+
+@event.listens_for(Engine, "connect")
+def set_sqlite_pragma(dbapi_connection, connection_record):
+    cursor = dbapi_connection.cursor()
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
 
 
 app = Flask(__name__)
@@ -32,7 +44,8 @@ app.config['SQLALCHEMY_ECHO'] = True
 app.secret_key = "eNelayan"
 db = SQLAlchemy(app)
 sqlite_engine = sqlalchemy.create_engine(f"sqlite:///eNelayan.db",
-                poolclass=sqlalchemy.pool.SingletonThreadPool, echo=False, future=True)
+                                         poolclass=sqlalchemy.pool.SingletonThreadPool, echo=False, future=True)
+event.listen(sqlite_engine, 'connect', set_sqlite_pragma)
 Base = declarative_base()
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", None)
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", None)
@@ -51,10 +64,7 @@ def load_user(user_id):
     return AppUser.get_user(user_id)
 
 
-class ActionResult(Enum):
-    SUCCESS = 0
-    FAILURE = 1
-    UNKNOWN = -1
+
 
 
 class FishModel(Base):
@@ -72,18 +82,6 @@ class FishModel(Base):
     def __repr__(self):
         return f"Fish_Inventory(id={self.id!r}, name={self.name!r}, image={self.image!r}, weight={self.weight!r}, " \
                f"quantity={self.quantity!r}, location={self.location!r}, price={self.price!r}, seller={self.optional_seller!r}) "
-
-
-class AppUserModel(Base):
-    __tablename__ = 'app_user'
-    user_id = Column(String(), primary_key=True)
-    name = Column(String())
-    email = Column(String())
-    profile_pic = Column(String())
-    role = Column(String())
-
-    def __repr__(self):
-        return f"User_Inventory(id={self.id!r}, name={self.name!r}, email={self.email!r}, profile_pic={self.profile_pic!r})"
 
 
 class AppUser(UserMixin):
@@ -179,9 +177,14 @@ def homepage():
         return '<a class="button" href="/login">Google Login</a>'
 
 
-@app.route("/favicon.ico")
+@app.route("/favicon.ico/")
 def favicon():
     return "", 200
+
+
+@app.route("/api/")
+def home():
+    return "Hurrah! The eNelayan project's API service is accessible!", 200
 
 
 def get_google_provider_cfg():
@@ -260,7 +263,7 @@ def callback():
         login_user(user)
 
         # Send user back to homepage
-        return redirect(url_for('get_all_fish_data'))
+        return redirect(url_for('login'))
 
     else:
         return_data = "User email not available or not verified by Google."
@@ -273,6 +276,23 @@ def logout():
     logout_user()
     return redirect("www.google.com")
 
+
+@app.route('/business', methods=['POST'])
+@cross_origin()
+def insert_business_data():
+    id = request.form.get("id") if "id" in request.form else None
+    owner = request.form.get("owner") if "owner" in request.form else None
+    avg_price = request.form.get("avgprice") if "avgprice" in request.form else None
+    description = request.form.get("description") if "description" in request.form else None
+    rating = request.form.get("rating") if "rating" in request.form else None
+    business_name = request.form.get("businessname") if "businessname" in request.form else None
+    products = request.form.get("products") if "products" in request.form else None
+    location = request.form.get("location") if "location" in request.form else None
+    try:
+        return_data = BusinessModel().create_business(id, owner, avg_price, description, rating, business_name, products, location)
+    except Exception as e:
+        return_data = [{"Status": "ERROR", "Message": str(e)}]
+    return return_response(return_data, 200)
 
 
 @app.route('/fish', methods=['POST'])
@@ -288,7 +308,7 @@ def fish_data():
         session_factory = sessionmaker(bind=sqlite_engine)
         scope_session = scoped_session(session_factory)
         with Session(sqlite_engine) as session:
-            fish = FishModel(name=name, image=image, weight=weight, location=location, price=price,
+            fish = FishModel(name=name, image=image, weight=weight, location=location, price=float(price),
                              optional_seller=seller)
             session.add_all([fish])
             session.commit()
@@ -296,6 +316,22 @@ def fish_data():
         return_data = [{"Status": "SUCCESS",
                         "Message": "Fish data inserted successfully!"}]
     except Exception as e:
+        return_data = [{"Status": "ERROR", "Message": str(e)}]
+    return return_response(return_data, 200)
+
+
+@app.route("/price-analysis/fish/", methods=['GET'])
+@cross_origin()
+def get_price_data_by_fish_name():
+    try:
+        query = 'select name, price from fish_inventory'
+        b64_string = ''
+        b64_string = PlotAnalysis().generate_plots(sqlite_engine, text(query))
+        return_data = str(b64_string)
+        if str(b64_string) == str(ActionResult.FAILURE):
+            raise Exception("Sorry, but the action couldn't be performed")
+    except Exception as e:
+        print(e)
         return_data = [{"Status": "ERROR", "Message": str(e)}]
     return return_response(return_data, 200)
 
@@ -358,5 +394,5 @@ def server_error(err):
 
 # Press the green button in the gutter to run the script.
 if __name__ == '__main__':
-    app.run(debug=False, port=5050, ssl_context="adhoc")
+    app.run(host='0.0.0.0', debug=False, port=5050, ssl_context="adhoc")
     # homepage()
