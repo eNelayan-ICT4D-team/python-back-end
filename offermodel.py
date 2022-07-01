@@ -1,24 +1,26 @@
 from sqlalchemy import ForeignKey, Column, Integer, Float, String, Date, select, update
-from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, relationship
+import traceback
+from flask_login import UserMixin
+from sqlalchemy import Column, String, select, update, delete
+from sqlalchemy.orm import Session
 from sqlalchemy.orm import scoped_session
 from sqlalchemy.orm import sessionmaker
-from appusermodel import AppUserModel
 from actionresult import ActionResult
-
-Base = declarative_base()
+from sqlite_orm import Base, sqlite_engine
 
 
 class OfferModel(Base):
     __tablename__ = 'fish_offer'
     oid = Column(Integer, primary_key=True)
-    name = Column(String())
+    name = Column(String(), ForeignKey("fish_business.business_name"), nullable=False)
     pricePerKilo = Column(Float())
     category = Column(String(), nullable=True)
     description = Column(String(), nullable=True)
     amountOfKilos = Column(Float())
     expiration = Column(Date(), nullable=True)
-    user_relationship = relationship("AppUserModel", back_populates="app_user")
+    fish_business = relationship("BusinessModel", backref="fish_business")
+
     # one-to-one relationship -> https://docs.sqlalchemy.org/en/14/orm/basic_relationships.html
 
     def __repr__(self):
@@ -30,13 +32,13 @@ def create_offer():
     pass
 
 
-def get_business():
+def get_offer():
     pass
 
 
-def update_business():
+def update_offer():
     pass
 
 
-def delete_business():
+def delete_offer():
     pass

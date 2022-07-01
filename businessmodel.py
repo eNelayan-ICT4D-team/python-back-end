@@ -3,23 +3,22 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Session, relationship
 from sqlalchemy.orm import scoped_session
 from sqlalchemy.orm import sessionmaker
-from appusermodel import AppUserModel
 from actionresult import ActionResult
-
-Base = declarative_base()
+from sqlite_orm import Base, sqlite_engine
+# from appusermodel import AppUserModel
 
 
 class BusinessModel(Base):
     __tablename__ = 'fish_business'
     id = Column(Integer, primary_key=True)
-    owner_user_id = Column(String(), ForeignKey("app_user.user_id"), nullable=False)
+    owner_user_id = Column(String(), ForeignKey("app_user.id"), nullable=False)
     avg_price = Column(Float(), nullable=True)
     description = Column(String(), nullable=True)
     rating = Column(Float(), nullable=True)
-    business_name = Column(String(), nullable=True)
+    business_name = Column(String(), unique=True, nullable=False)
     products = Column(String(), nullable=True)  # array of offer-IDs keep getting updated
     location = Column(String())
-    user_relationship = relationship("AppUserModel", back_populates="app_user")
+    app_user = relationship("AppUserModel", backref="app_user")
     # one-to-one relationship -> https://docs.sqlalchemy.org/en/14/orm/basic_relationships.html
 
     def __repr__(self):
@@ -27,12 +26,12 @@ class BusinessModel(Base):
                f"Rating={self.rating!r}, Business_Name={self.business_name!r}, Product={self.product!r}, Location={self.location!r})"
 
 
-def create_business(sqlite_engine, user_id, owner, avg_price, description, rating, businessname, products, location):
+def create_business(user_id, owner, avg_price, description, rating, businessname, products, location):
     try:
         session_factory = sessionmaker(bind=sqlite_engine)
         scope_session = scoped_session(session_factory)
         session = Session(sqlite_engine)
-        name, image, weight, location, price, seller = [], [], [], [], [], []
+        # name, image, weight, location, price, seller = [], [], [], [], [], []
         stmt = insert(BusinessModel).values(BusinessModel.owner_user_id == user_id,
                                             BusinessModel.avg_price == avg_price,
                                             BusinessModel.description == description,
@@ -49,7 +48,7 @@ def create_business(sqlite_engine, user_id, owner, avg_price, description, ratin
     return ActionResult.FAILURE
 
 
-def get_business_by_id(sqlite_engine, user_id):
+def get_business_by_id(user_id):
     try:
         session_factory = sessionmaker(bind=sqlite_engine)
         scope_session = scoped_session(session_factory)
@@ -72,7 +71,7 @@ def get_business_by_id(sqlite_engine, user_id):
     return ActionResult.FAILURE
 
 
-def update_business_product(sqlite_engine, _user_id, product):
+def update_business_product(_user_id, product):
     try:
         session_factory = sessionmaker(bind=sqlite_engine)
         scope_session = scoped_session(session_factory)
@@ -86,7 +85,7 @@ def update_business_product(sqlite_engine, _user_id, product):
         return ActionResult.FAILURE
 
 
-def update_business_rating(sqlite_engine, _user_id, rating):
+def update_business_rating(_user_id, rating):
     try:
         session_factory = sessionmaker(bind=sqlite_engine)
         scope_session = scoped_session(session_factory)
@@ -100,5 +99,15 @@ def update_business_rating(sqlite_engine, _user_id, rating):
         return ActionResult.FAILURE
 
 
-def delete_business():
-    pass
+def delete_business(_user_id):
+    try:
+        session_factory = sessionmaker(bind=sqlite_engine)
+        scope_session = scoped_session(session_factory)
+        session = Session(sqlite_engine)
+        stmt = delete(BusinessModel).where(BusinessModel.owner_user_id == _user_id)
+        session.execute(stmt)
+        session.commit()
+        scope_session.remove()
+        return ActionResult.SUCCESS
+    except Exception as e:
+        return ActionResult.FAILURE

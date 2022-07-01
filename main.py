@@ -1,12 +1,11 @@
 from flask import Flask, jsonify, request, redirect, url_for
 from flask_restful import Api
-import flask, sqlalchemy, os, requests, json
+import flask, traceback, os, requests, json
 from flask_cors import CORS, cross_origin
 from flask_sqlalchemy import SQLAlchemy
 from sqlalchemy import ForeignKey, Column, Integer, Float, String, Date, select, update, event, text
-from sqlalchemy.engine import Engine
 from sqlalchemy.sql import func
-from sqlalchemy.ext.declarative import declarative_base
+from sqlite_orm import Base, sqlite_engine
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session, relationship
 # set up a scoped_session -> https://stackoverflow.com/a/18265238/3482140
@@ -21,18 +20,12 @@ from flask_login import (
     logout_user,
 )
 from oauthlib.oauth2 import WebApplicationClient
-from appusermodel import AppUserModel
+from appusermodel import AppUser
 from businessmodel import BusinessModel
 from offermodel import OfferModel
 from plot_analysis import PlotAnalysis
 from actionresult import ActionResult
-
-
-@event.listens_for(Engine, "connect")
-def set_sqlite_pragma(dbapi_connection, connection_record):
-    cursor = dbapi_connection.cursor()
-    cursor.execute("PRAGMA foreign_keys=ON")
-    cursor.close()
+import telnyx_sms
 
 
 app = Flask(__name__)
@@ -43,10 +36,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ECHO'] = True
 app.secret_key = "eNelayan"
 db = SQLAlchemy(app)
-sqlite_engine = sqlalchemy.create_engine(f"sqlite:///eNelayan.db",
-                                         poolclass=sqlalchemy.pool.SingletonThreadPool, echo=False, future=True)
-event.listen(sqlite_engine, 'connect', set_sqlite_pragma)
-Base = declarative_base()
+
 GOOGLE_CLIENT_ID = os.environ.get("GOOGLE_CLIENT_ID", None)
 GOOGLE_CLIENT_SECRET = os.environ.get("GOOGLE_CLIENT_SECRET", None)
 GOOGLE_DISCOVERY_URL = (
@@ -58,13 +48,15 @@ login_manager.init_app(app)
 client = WebApplicationClient(GOOGLE_CLIENT_ID)
 
 
+@app.before_first_request
+def create_tables():
+    Base.metadata.create_all(sqlite_engine)
+
+
 # Flask-Login helper to retrieve a user from our db
 @login_manager.user_loader
 def load_user(user_id):
     return AppUser.get_user(user_id)
-
-
-
 
 
 class FishModel(Base):
@@ -82,63 +74,6 @@ class FishModel(Base):
     def __repr__(self):
         return f"Fish_Inventory(id={self.id!r}, name={self.name!r}, image={self.image!r}, weight={self.weight!r}, " \
                f"quantity={self.quantity!r}, location={self.location!r}, price={self.price!r}, seller={self.optional_seller!r}) "
-
-
-class AppUser(UserMixin):
-    def __init__(self, id_, name, email, profile_pic):
-        self.id = id_
-        self.name = name
-        self.email = email
-        self.profile_pic = profile_pic
-        # self.role = role
-
-    @staticmethod
-    def create_user(_user_id, _name, _email, _profile_pic, _role):
-        try:
-            session_factory = sessionmaker(bind=sqlite_engine)
-            scope_session = scoped_session(session_factory)
-            session = Session(sqlite_engine)
-            user = AppUserModel(user_id=_user_id, name=_name, email=_email, profile_pic=_profile_pic, role=_role)
-            session.add(user)
-            session.commit()
-            scope_session.remove()
-            return ActionResult.SUCCESS
-        except Exception as e:
-            return ActionResult.FAILURE
-
-    @staticmethod
-    def get_user(_user_id):
-        try:
-            session_factory = sessionmaker(bind=sqlite_engine)
-            scope_session = scoped_session(session_factory)
-            session = Session(sqlite_engine)
-            stmt = select(AppUserModel).where(AppUserModel.user_id == _user_id)
-            result = session.execute(stmt)
-            for user in result.scalars():
-                user_id = _user_id
-                name = user.name
-                email = user.email
-                profile_pic = user.profile_pic
-                role = user.role
-            user_object = AppUserModel(user_id, name, email, profile_pic, role)
-            scope_session.remove()
-        except Exception as e:
-            user_object = None
-        return user_object
-
-    @staticmethod
-    def update_role_user(_user_id, _role):
-        try:
-            session_factory = sessionmaker(bind=sqlite_engine)
-            scope_session = scoped_session(session_factory)
-            session = Session(sqlite_engine)
-            stmt = update(AppUserModel).where(AppUserModel.user_id == _user_id).values(role=_role)
-            result = session.execute(stmt)
-            session.commit()
-            scope_session.remove()
-            return ActionResult.SUCCESS
-        except Exception as e:
-            return ActionResult.FAILURE
 
 
 try:
@@ -167,8 +102,9 @@ def homepage():
             "<p>Hello, {}! You're logged in! Email: {}</p>"
             "<div><p>Google Profile Picture:</p>"
             '<img src="{}" alt="Google profile pic"></img></div>'
+            "<div><p>Your role: {}</p>"
             '<a class="button" href="/logout">Logout</a>'.format(
-                current_user.name, current_user.email, current_user.profile_pic
+                current_user.name, current_user.email, current_user.profile_pic, current_user.role
             )
         )
     else:
@@ -248,22 +184,27 @@ def callback():
         unique_id = userinfo_response.json()["sub"]
         users_email = userinfo_response.json()["email"]
         picture = userinfo_response.json()["picture"]
-        users_name = userinfo_response.json()["given_name"]
+        users_name = userinfo_response.json()["name"]  # + ' ' + userinfo_response.json()["family_name"]
         # Create a user in your db with the information provided
         # by Google
+        role = "CUSTOMER"
         user = AppUser(
-            id_=unique_id, name=users_name, email=users_email, profile_pic=picture
+            id_=unique_id, name=users_name, email=users_email, profile_pic=picture, role=role
         )
-
+        print("Waiting for user-creation in table...")
         # Doesn't exist? Add it to the database.
         if not AppUser.get_user(unique_id):
-            AppUser.create_user(unique_id, users_name, users_email, picture, "CUSTOMER")
-
+            result = AppUser.create_user(unique_id, users_name, users_email, picture, "CUSTOMER")
+            if result == ActionResult.SUCCESS:
+                print("User got created successfully!")
+            else:
+                print("User was not created! Please try again using a valid Google-verified email address.")
+                return redirect(url_for('homepage'))
         # Begin user session by logging the user in
         login_user(user)
 
         # Send user back to homepage
-        return redirect(url_for('login'))
+        return redirect(url_for('homepage'))
 
     else:
         return_data = "User email not available or not verified by Google."
@@ -273,8 +214,20 @@ def callback():
 @app.route("/logout")
 @login_required
 def logout():
-    logout_user()
-    return redirect("www.google.com")
+    if current_user.is_authenticated:
+        logout_user()
+    return redirect(url_for('homepage'))
+
+
+@app.route("/otp/<string:mobile>", methods=['GET'])
+@cross_origin()
+def get_otp(mobile):
+    otp = telnyx_sms.send_sms(mobile)
+    if otp != '':
+        return_data = "The OTP generated by the application is "+otp
+    else:
+        return_data = "There is some problem generating the OTP currently. Please try after some time."
+    return return_response(return_data, 200)
 
 
 @app.route('/business', methods=['POST'])
